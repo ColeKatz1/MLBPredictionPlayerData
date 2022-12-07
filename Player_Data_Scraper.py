@@ -43,7 +43,6 @@ def pullTable(url, tableID):
     return(data)
 
 def boxScoreUrls(url):
-    sleep(randint(1,5))
     res = requests.get(url, headers = {'User-agent': 'youaojsdoiajsdoijsado'})
     comm = re.compile("<!--|-->")
     soup = bs4.BeautifulSoup(comm.sub("", res.text), 'lxml')
@@ -62,14 +61,19 @@ def boxScoreUrls(url):
     finalUrlList = [i.replace('\']','') for i in finalUrlList]
     return(finalUrlList)
 
-
-def getStartingLineupInfo(boxScoreUrl):
+def getStartingLineupInfo(boxScoreUrl, teamAbbreviation):
+    sleep(randint(4,8))
     links = []
     res = requests.get(boxScoreUrl)
     comm = re.compile("<!--|-->")
     soup = bs4.BeautifulSoup(comm.sub("", res.text), 'lxml')
-    find = soup.find(class_ = "data_grid_group solo")
-    data_rows = find.findAll('tr')
+    homeTeamAbbreviation = boxScoreUrl[45:48]
+    if teamAbbreviation == homeTeamAbbreviation:
+        divs = soup.find('div', id = "lineups_2")
+    else:
+        divs = soup.find('div', id = "lineups_1")
+    
+    data_rows = divs.findAll('tr')
     game_data = [[td.getText() for td in data_rows[i].findAll(['th','td'])]
         for i in range(len(data_rows))
         ]
@@ -81,10 +85,7 @@ def getStartingLineupInfo(boxScoreUrl):
     df['playerPosition'] = playerPosition
     df['battingOrder'] = battingOrder
 
-
-    findLink = soup.find(class_ = "data_grid_group solo")
-    rows = findLink.findAll('tr')
-    for tr in rows:
+    for tr in data_rows:
         cols = tr.findAll('td')
         link = cols[1].find('a').get('href')
         links.append(link)
@@ -130,12 +131,14 @@ def pullBatterData(playerLink):
     return df
 
 
-def getListOfAllStarters(scheduleUrl): 
+def getListOfAllStarters(scheduleUrl, teamAbbreviation): 
     listOfUniqueStarters = []
     listOfStarters = []
     urls = boxScoreUrls(scheduleUrl)
-    for i in range(len(urls)):
-        startingLineup = getStartingLineupInfo(urls[i])['newPlayerName'].values.tolist()
+    urls = urls[:10]
+    for url in urls:
+        print(url)
+        startingLineup = getStartingLineupInfo(url, teamAbbreviation)['newPlayerName'].values.tolist()
         listOfStarters.append(startingLineup)
     for x in listOfStarters:
         for y in x:
@@ -143,5 +146,9 @@ def getListOfAllStarters(scheduleUrl):
                 listOfUniqueStarters.append(y)
     return listOfUniqueStarters
 
-request = requests.get("https://www.baseball-reference.com/teams/LAD/2022-schedule-scores.shtml")
-print(request)  
+
+
+
+print(getListOfAllStarters("https://www.baseball-reference.com/teams/LAD/2021-schedule-scores.shtml","LAN"))
+#request = requests.get("https://www.baseball-reference.com/teams/LAD/2022-schedule-scores.shtml")
+#print(request)  
