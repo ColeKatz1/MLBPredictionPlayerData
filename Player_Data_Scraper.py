@@ -4,6 +4,9 @@ import pandas as pd
 import re
 from time import sleep
 from random import randint
+import boto3
+from access_keys import access_key, secret_access_key
+import io
 
 def findTables(url):
     res = requests.get(url)
@@ -62,7 +65,7 @@ def boxScoreUrls(url):
     return(finalUrlList)
 
 def getStartingLineupInfo(boxScoreUrl, teamAbbreviation):
-    sleep(randint(4,8))
+    sleep(randint(5,10))
     links = []
     res = requests.get(boxScoreUrl)
     comm = re.compile("<!--|-->")
@@ -90,12 +93,65 @@ def getStartingLineupInfo(boxScoreUrl, teamAbbreviation):
         link = cols[1].find('a').get('href')
         links.append(link)
     df['links'] = links
-    df['newPlayerName'] = df['links'].str[11:]
-    df['newPlayerName'] = df['newPlayerName'].str[:7]
+    newPlayerName = []
+    for i in range(len(df['links'])):
+        regex = re.findall("/\w/\w{3,}",df['links'][i])
+        newPlayerName.append(regex)
+    df['newPlayerName'] = newPlayerName
+    df['newPlayerName'] = df['newPlayerName'].astype(str)
+    df['newPlayerName'] = df['newPlayerName'].str[5:-2]
     for i in range(len(df['playerName'])):
         if df['battingOrder'][i] == '':
             df['battingOrder'][i] = '20'
-    return df
+    dfBatters = df.head(9)
+    dfPitcher = df.loc[(df['playerPosition'] == 'P')]
+    return dfBatters, dfPitcher
+
+def getListOfAllStarters(scheduleUrl, teamAbbreviation): 
+    listOfUniqueBatters = []
+    listOfUniquePitchers = []
+    listOfBatters = []
+    listOfPitchers = []
+    urls = boxScoreUrls(scheduleUrl) #https://www.baseball-reference.com/boxes/COL/COL202207280.shtml this one doesn't have a pitcher
+    #urls = urls[:10]
+    for url in urls:
+        print(url)
+        startingBatters = getStartingLineupInfo(url, teamAbbreviation)[0]['newPlayerName'].values.tolist()
+        startingPitcher = getStartingLineupInfo(url, teamAbbreviation)[1]['newPlayerName'].values.tolist()
+        listOfBatters.append(startingBatters)
+        listOfPitchers.append(startingPitcher)
+    for x in listOfBatters:
+        for batter in x:
+            if batter not in listOfUniqueBatters:
+                listOfUniqueBatters.append(batter)
+
+    for z in listOfPitchers:
+        for pitcher in z:
+            if pitcher not in listOfUniquePitchers:
+                listOfUniquePitchers.append(pitcher)
+
+
+    return listOfUniqueBatters, listOfUniquePitchers
+
+
+
+def uploadStarterList(scheduleUrl, teamAbbreviation, year):
+    uniqueStarters = getListOfAllStarters(scheduleUrl, teamAbbreviation)
+    uniqueBatters = uniqueStarters[0]
+    uniquePitchers = uniqueStarters[1]
+    dfBatters = pd.DataFrame()
+    dfPitchers= pd.DataFrame()
+    dfBatters['Batters'] = uniqueBatters
+    dfPitchers['Pitchers'] = uniquePitchers
+    dfBatters.to_csv(year + '_' + teamAbbreviation + "_Batters.csv")
+    dfPitchers.to_csv(year + '_' + teamAbbreviation + "_Pitchers.csv")
+    dfBatters = pd.read_csv(year + '_' + teamAbbreviation + "_Batters.csv")
+    dfPitchers = pd.read_csv(year + '_' + teamAbbreviation + "_Pitchers.csv")
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    credentials.upload_file(Filename = year + '_' + teamAbbreviation + '_Batters.csv', Bucket = 'mlbplayerdata', Key = year + '_' + teamAbbreviation + '_Batters.csv')
+    credentials.upload_file(Filename = year + '_' + teamAbbreviation + '_Pitchers.csv', Bucket = 'mlbplayerdata', Key = year + '_' + teamAbbreviation + '_Pitchers.csv')
+
 
 def getPlayerStatsLink(boxScoreUrl, year): #just get the batting data for every 
     batterGameLogLinks = []
@@ -109,6 +165,7 @@ def getPlayerStatsLink(boxScoreUrl, year): #just get the batting data for every
     return pitcherGameLogLinks, batterGameLogLinks
 
 def pullPitcherData(playerLink):
+    sleep(randint(4,8))
     df = pullTable(playerLink,"pitching_gamelogs")
     boxScores = boxScoreUrls(playerLink)
     boxScores = boxScores[1:] #one thing you can consider is shifting this by 1 so that you have a new variable "boxScoreOfNextGame" then you just use that to combine
@@ -130,25 +187,30 @@ def pullBatterData(playerLink):
     df = df.drop(['index'],axis=1)
     return df
 
+def getStartingPlayerLinks(teamAbbreviation, year):
+    batterGameLogLinks = []
+    pitcherGameLogLinks = []
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    batters = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + teamAbbreviation + '_Batters.csv')
+    dfBatters = pd.read_csv(io.BytesIO(batters['Body'].read()))
+    pitchers = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + teamAbbreviation + '_Pitchers.csv')
+    dfPitchers = pd.read_csv(io.BytesIO(pitchers['Body'].read()))
+    for i in range(len(dfBatters)):
+        batterGameLogLinks.append("https://www.baseball-reference.com/players/gl.fcgi?id=" + dfBatters['Batters'][i] + "&t=b" + "&year=" + year)
+    for i in range(len(dfPitchers)):
+        pitcherGameLogLinks.append("https://www.baseball-reference.com/players/gl.fcgi?id=" + dfPitchers['Pitchers'][i] + "&t=p" + "&year=" + year)
+    return batterGameLogLinks, pitcherGameLogLinks
 
-def getListOfAllStarters(scheduleUrl, teamAbbreviation): 
-    listOfUniqueStarters = []
-    listOfStarters = []
-    urls = boxScoreUrls(scheduleUrl)
-    urls = urls[:10]
-    for url in urls:
-        print(url)
-        startingLineup = getStartingLineupInfo(url, teamAbbreviation)['newPlayerName'].values.tolist()
-        listOfStarters.append(startingLineup)
-    for x in listOfStarters:
-        for y in x:
-            if y not in listOfUniqueStarters:
-                listOfUniqueStarters.append(y)
-    return listOfUniqueStarters
+def uploadStartingPitcherData(teamAbbreviation, year):
+    links = getStartingPlayerLinks(teamAbbreviation, year)[1]
+    links = links[:3]
+    for link in links:
+        data = pullPitcherData(link)
+        print(data)
 
-
-
-
-print(getListOfAllStarters("https://www.baseball-reference.com/teams/LAD/2021-schedule-scores.shtml","LAN"))
+#print(getStartingPlayerLinks("ARI","2021")[1])
+print(uploadStartingPitcherData("ARI","2021"))
+#uploadStarterList("https://www.baseball-reference.com/teams/ARI/2021-schedule-scores.shtml","ARI", "2021")
 #request = requests.get("https://www.baseball-reference.com/teams/LAD/2022-schedule-scores.shtml")
 #print(request)  
