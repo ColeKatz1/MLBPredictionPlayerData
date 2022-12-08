@@ -205,12 +205,19 @@ def getStartingPlayerLinks(teamAbbreviation, year):
 def uploadStartingPitcherData(teamAbbreviation, year):
     links = getStartingPlayerLinks(teamAbbreviation, year)[1]
     links = links[:3]
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
     for link in links:
+        playerName = re.findall("id=\w+&",link)
+        playerName = str(playerName)
+        playerName= playerName[5:-3]
         data = pullPitcherData(link)
-        print(data)
+        data.to_csv(year + '_' + playerName + '_Pitching_Logs.csv')
+        credentials.upload_file(Filename = year + '_' + playerName + '_Pitching_Logs.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Pitching_Logs.csv')
+
 
 #print(getStartingPlayerLinks("ARI","2021")[1])
-print(uploadStartingPitcherData("ARI","2021"))
+uploadStartingPitcherData("ARI","2021")
 #uploadStarterList("https://www.baseball-reference.com/teams/ARI/2021-schedule-scores.shtml","ARI", "2021")
 #request = requests.get("https://www.baseball-reference.com/teams/LAD/2022-schedule-scores.shtml")
 #print(request)  
