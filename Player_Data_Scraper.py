@@ -7,6 +7,7 @@ from random import randint
 import boto3
 from access_keys import access_key, secret_access_key
 import io
+from cmath import nan
 
 def findTables(url):
     res = requests.get(url)
@@ -253,7 +254,124 @@ def uploadStartingBatterData(teamAbbreviation, year):
         data.to_csv(year + '_' + playerName + '_Batting_Logs.csv')
         credentials.upload_file(Filename = year + '_' + playerName + '_Batting_Logs.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Batting_Logs.csv')
 
+def uploadData(teamAbbreviation, year):
+    scheduleUrl = "https://www.baseball-reference.com/teams/" + teamAbbreviation + "/" + year + ".shtml"
+    uploadStarterList(scheduleUrl,teamAbbreviation,year)
+    uploadStartingBatterData(teamAbbreviation, year)
+    uploadStartingPitcherData(teamAbbreviation, year)
 
-uploadStartingPitcherData("ATL","2021")
+def findMovingAverage(df, columnName, numberOfGames):
+    variableList = df[columnName]
+    variableSeries = pd.Series(variableList)
+    windows = variableSeries.rolling(numberOfGames) #check difference in accuracy when using moving average vs weighted average
+    movingAverage = windows.mean()
+    movingAverageList = movingAverage.values.tolist()
+    #movingAverageList.insert(0, nan)
+    #movingAverageList.pop()
+    return(movingAverageList)
+
+def prepareBattingData(playerName, year): 
+    gameOBP = []
+    gameBA = []
+    gameXBH = []
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    battingData = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + playerName + '_Batting_Logs.csv')
+    df = pd.read_csv(io.BytesIO(battingData['Body'].read()))
+    substrings = ['CG','GS']
+    df = df[df['Inngs'].str.contains('|'.join(substrings))]
+    df = df.reset_index(drop = True)
+    boxScores = df['boxScores']
+    boxScores = boxScores.to_list()
+    boxScores.pop(0)
+    boxScores.append(nan)
+    df['boxScoreUrlNextGame'] = boxScores
+    for i in range(len(df['PA'])):
+        if int(df['PA'][i]) != 0:
+            gameOBP.append((float(df['H'][i]) + float(df['BB'][i]) + float(df['HBP'][i])) / (float(df['AB'][i]) + float(df['BB'][i]) + float(df['HBP'][i]) + float(df['SF'][i])) )
+            gameXBH.append(int(df['2B'][i]) + int(df['3B'][i]) + int(df['HR'][i]))
+        else:
+            gameOBP.append(nan)
+            gameXBH.append(nan)
+        if int(df['AB'][i]) != 0:
+            gameBA.append((float(df['H'][i])  / float(df['AB'][i])))
+        else:
+            gameBA.append(nan)
+    df['gameOBP'] = gameOBP
+    df['gameBA'] = gameBA
+    df['XBH'] = gameXBH
+
+    maHR = findMovingAverage(df,'HR',5)
+    df['maHR'] = maHR
+    maSO = findMovingAverage(df,'SO',5)
+    df['maSO'] = maSO
+    maH = findMovingAverage(df,'H',5)
+    df['maH'] = maH
+    maSB = findMovingAverage(df,'SB',5)
+    df['maSB'] = maSB
+    maCS = findMovingAverage(df,'CS',5)
+    df['maCS'] = maCS
+    maBB = findMovingAverage(df,'BB',5)
+    df['maBB'] = maBB
+    maDFS = findMovingAverage(df,'DFS(FD)',5)
+    df['maDFS'] = maDFS
+
+
+
+
+    df.to_csv("malksdmlaskmda.csv")
+
+def preparePitchingData(playerName, year):
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    pitchingData = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + playerName + '_Pitching_Logs.csv')
+    df = pd.read_csv(io.BytesIO(pitchingData['Body'].read()))
+    boxScores = df['boxScores']
+    boxScores = boxScores.to_list()
+    boxScores.pop(0)
+    boxScores.append(nan)
+    df['boxScoreUrlNextGame'] = boxScores
+    df.drop(df.columns[:5], axis=1)
+    df['PitchesThrownLastStart'] = df['Pit']
+    daysRest = df['DR']
+    daysRest = daysRest.to_list()
+    daysRest.pop(0)
+    daysRest.append(nan)
+    df['daysRest'] = daysRest
+    maERA = findMovingAverage(df,'ERA',3)
+    df['maERA'] = maERA
+    maFIP = findMovingAverage(df,'FIP',3)
+    df['maFIP'] = maFIP
+    maBB = findMovingAverage(df,'BB',3)
+    df['maBB'] = maBB
+    maSO = findMovingAverage(df,'SO',3)
+    df['maSO'] = maSO
+    maLD = findMovingAverage(df,'LD',3)
+    df['maLD'] = maLD
+    maGSc = findMovingAverage(df,'GSc',3)
+    df['maGSc'] = maGSc
+    maR = findMovingAverage(df,'R',3)
+    df['maR'] = maR
+    maER = findMovingAverage(df,'ER',3)
+    df['maER'] = maER
+    maStS = findMovingAverage(df,'StS',3) #divide this by ma of innings pitched I think
+    df['maStS'] = maStS
+    maIP = findMovingAverage(df,'IP',3) 
+    df['maIP'] = maIP
+    maSB = findMovingAverage(df,'SB',3) 
+    df['maSB'] = maSB
+    maCS = findMovingAverage(df,'CS',3) 
+    df['maCS'] = maCS
+
+    df = df[['boxScoreUrlNextGame','ERA','FIP','daysRest','PitchesThrownLastStart','maERA','maFIP','maBB','maSO',
+                'maLD','maGSc','maR','maER','maStS','maIP','maSB','maCS']]
+    df.to_csv(year + '_' + playerName +  "_Pitching_Data_Cleaned.csv")
+    credentials.upload_file(Filename = year + '_' + playerName + '_Pitching_Data_Cleaned.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Pitching_Data_Cleaned.csv')
+
+
+print(preparePitchingData('lynnla01',"2021"))
 
 #pullTable("https://www.baseball-reference.com/players/gl.fcgi?id=youngal01&t=p&year=2021",)
+
+#res = requests.get("https://www.baseball-reference.com/players/gl.fcgi?id=youngal01&t=p&year=2021")
+#print(res)
