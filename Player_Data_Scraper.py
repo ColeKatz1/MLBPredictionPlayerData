@@ -210,6 +210,8 @@ def pullBatterData(playerLink):
     df = df.reset_index()
     df['boxScores'] = boxScores
     df = df.drop(['index'],axis=1)
+
+    df.to_csv("test.csv")
     return df
 
 def getStartingPlayerLinks(teamAbbreviation, year):
@@ -241,7 +243,7 @@ def uploadStartingPitcherData(teamAbbreviation, year):
         credentials.upload_file(Filename = year + '_' + playerName + '_Pitching_Logs.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Pitching_Logs.csv')
 
 
-def uploadStartingBatterData(teamAbbreviation, year):
+def uploadStartingBatterData(teamAbbreviation, year): #gotta add player name here
     links = getStartingPlayerLinks(teamAbbreviation, year)[0]
     credentials = boto3.client('s3', aws_access_key_id = access_key, 
                           aws_secret_access_key= secret_access_key) 
@@ -263,7 +265,7 @@ def uploadData(teamAbbreviation, year):
 def findMovingAverage(df, columnName, numberOfGames):
     variableList = df[columnName]
     variableSeries = pd.Series(variableList)
-    windows = variableSeries.rolling(numberOfGames) #check difference in accuracy when using moving average vs weighted average
+    windows = variableSeries.ewm(numberOfGames) #check difference in accuracy when using moving average vs weighted average
     movingAverage = windows.mean()
     movingAverageList = movingAverage.values.tolist()
     #movingAverageList.insert(0, nan)
@@ -285,10 +287,17 @@ def prepareBattingData(playerName, year):
     boxScores = boxScores.to_list()
     boxScores.pop(0)
     boxScores.append(nan)
-    df['boxScoreUrlNextGame'] = boxScores
+    bop = df['BOP']
+    bop = bop.to_list()
+    bop.pop(0)
+    bop.append(nan)
+    #need to pop one for BOP, batting position
+    df['boxScoreUrl'] = boxScores
+    df['BOP'] = bop
+    df['playerName'] = playerName
     for i in range(len(df['PA'])):
         if int(df['PA'][i]) != 0:
-            gameOBP.append((float(df['H'][i]) + float(df['BB'][i]) + float(df['HBP'][i])) / (float(df['AB'][i]) + float(df['BB'][i]) + float(df['HBP'][i]) + float(df['SF'][i])) )
+            gameOBP.append((float(df['H'][i]) + float(df['BB'][i]) + float(df['HBP'][i])) / (float(df['AB'][i]) + float(df['BB'][i]) + float(df['HBP'][i]) + float(df['SF'][i]) + float(df['SH'][i])) )
             gameXBH.append(int(df['2B'][i]) + int(df['3B'][i]) + int(df['HR'][i]))
         else:
             gameOBP.append(nan)
@@ -301,25 +310,31 @@ def prepareBattingData(playerName, year):
     df['gameBA'] = gameBA
     df['XBH'] = gameXBH
 
-    maHR = findMovingAverage(df,'HR',5)
+    maHR = findMovingAverage(df,'HR',4)
     df['maHR'] = maHR
-    maSO = findMovingAverage(df,'SO',5)
+    maSO = findMovingAverage(df,'SO',4)
     df['maSO'] = maSO
-    maH = findMovingAverage(df,'H',5)
+    maH = findMovingAverage(df,'H',4)
     df['maH'] = maH
-    maSB = findMovingAverage(df,'SB',5)
+    maSB = findMovingAverage(df,'SB',4)
     df['maSB'] = maSB
-    maCS = findMovingAverage(df,'CS',5)
+    maCS = findMovingAverage(df,'CS',4)
     df['maCS'] = maCS
-    maBB = findMovingAverage(df,'BB',5)
+    maBB = findMovingAverage(df,'BB',4)
     df['maBB'] = maBB
-    maDFS = findMovingAverage(df,'DFS(FD)',5)
+    maDFS = findMovingAverage(df,'DFS(FD)',4)
     df['maDFS'] = maDFS
+    maXBH = findMovingAverage(df,'XBH',4)
+    df['maXBH'] = maXBH
+    maOBP = findMovingAverage(df,'gameOBP',4)
+    df['maOBP'] = maOBP
+    maBA = findMovingAverage(df,'gameBA',4)
+    df['maBA'] = maBA
 
+    df = df[['boxScoreUrl','playerName','BOP','BA','maBA','OBP','maOBP','SLG','OPS','maHR','maSO','maH','maSB','maCS','maBB','maDFS','maXBH']]
+    df.to_csv(year + '_' + playerName +  "_Batting_Data_Cleaned.csv")
+    credentials.upload_file(Filename = year + '_' + playerName + '_Batting_Data_Cleaned.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Batting_Data_Cleaned.csv')
 
-
-
-    df.to_csv("malksdmlaskmda.csv")
 
 def preparePitchingData(playerName, year):
     credentials = boto3.client('s3', aws_access_key_id = access_key, 
@@ -369,7 +384,51 @@ def preparePitchingData(playerName, year):
     credentials.upload_file(Filename = year + '_' + playerName + '_Pitching_Data_Cleaned.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Pitching_Data_Cleaned.csv')
 
 
-print(preparePitchingData('lynnla01',"2021"))
+
+def prepareAllBattingData(teamAbbreviation, year):
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    startingBatters = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + teamAbbreviation + '_Batters.csv')
+    dfStartingBatters = pd.read_csv(io.BytesIO(startingBatters['Body'].read()))
+    for i in dfStartingBatters['Batters']:
+        prepareBattingData(i,year)
+
+def formTeamData(teamAbbreviation, year):
+    credentials = boto3.client('s3', aws_access_key_id = access_key, 
+                          aws_secret_access_key= secret_access_key) 
+    scheduleUrl = "https://www.baseball-reference.com/teams/" + teamAbbreviation + "/" + year + ".shtml"
+    urls = boxScoreUrls(scheduleUrl)
+    urls = urls[1:10]
+    dfAllGames = []
+    for url in urls:
+        print(url)
+        allStarters = getStartingLineupInfo(url, teamAbbreviation)
+        startingBatters = allStarters[0]['newPlayerName'].values.tolist()
+        startingPitcher = allStarters[1]['newPlayerName'].values.tolist()
+        dataframes = []
+        for i in startingBatters:
+            print(i)
+            startingBatterData = credentials.get_object(Bucket='mlbplayerdata', Key=  year + '_' + i + '_Batting_Data_Cleaned.csv')
+            df = pd.read_csv(io.BytesIO(startingBatterData['Body'].read()))
+            df = df.dropna(axis=0)
+            df = df[df["boxScoreUrl"].str.match(str(url))]
+            dataframes.append(df)
+        df = pd.concat(dataframes)
+        dfAllGames.append(df)
+    dfAllGames = pd.concat(dfAllGames)
+    dfAllGames = dfAllGames.groupby('boxScoreUrl').mean()
+    dfAllGames.to_csv(year + '_' + teamAbbreviation + '_Combined_Batting_Data.csv')
+    return dfAllGames
+
+
+
+
+
+uploadData("CIN","2021")
+
+
+#formTeamData("ARI","2021")
+#print(pullBatterData("https://www.baseball-reference.com/players/gl.fcgi?id=locasti01&t=b&year=2021"))
 
 #pullTable("https://www.baseball-reference.com/players/gl.fcgi?id=youngal01&t=p&year=2021",)
 
