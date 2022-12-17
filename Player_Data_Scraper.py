@@ -141,6 +141,63 @@ def getStartingLineupInfo(boxScoreUrl, teamAbbreviation):
     dfPitcher = df.loc[(df['playerPosition'] == 'P')]
     return dfBatters, dfPitcher
 
+
+def getStartingLineupInfoOhtani(boxScoreUrl, teamAbbreviation):
+    sleep(randint(5,10))
+    links = []
+    res = requests.get(boxScoreUrl)
+    comm = re.compile("<!--|-->")
+    soup = bs4.BeautifulSoup(comm.sub("", res.text), 'lxml')
+    homeTeamAbbreviation = boxScoreUrl[45:48]
+    if teamAbbreviation == homeTeamAbbreviation:
+        divs = soup.find('div', id = "lineups_2")
+    else:
+        divs = soup.find('div', id = "lineups_1")
+
+    data_rows = divs.findAll('tr')
+    game_data = [[td.getText() for td in data_rows[i].findAll(['th','td'])]
+        for i in range(len(data_rows))
+        ]
+    playerName = [el[1] for el in game_data]
+    playerPosition = [el[2] for el in game_data]
+    battingOrder = [el[0] for el in game_data]
+    df = pd.DataFrame()
+    df['playerName'] = playerName[:9]
+    df['playerPosition'] = playerPosition[:9]
+    df['battingOrder'] = battingOrder[:9]
+
+    for tr in data_rows[:9]:
+        cols = tr.findAll('td')
+        link = cols[1].find('a').get('href')
+        links.append(link)
+    df['links'] = links
+    newPlayerName = []
+    for i in range(len(df['links'])):
+        regex = re.findall("/\w/\w{3,}",df['links'][i])
+        newPlayerName.append(regex)
+    df['newPlayerName'] = newPlayerName
+    df['newPlayerName'] = df['newPlayerName'].astype(str)
+    df['newPlayerName'] = df['newPlayerName'].str[5:-2]
+    dfBatters = df
+
+    table = soup.find("table", id="LosAngelesAngelspitching")
+    startingPitcher = table.find('a').get('href')
+    startingPitcherList = []
+    startingPitcherList.append(startingPitcher)
+    dfPitcher = pd.DataFrame()
+    dfPitcher['links'] = startingPitcherList
+    newPlayerName = []
+    for i in range(len(dfPitcher['links'])):
+        regex = re.findall("/\w/\w{3,}",dfPitcher['links'][i])
+        newPlayerName.append(regex)
+    dfPitcher['newPlayerName'] = newPlayerName
+    dfPitcher['newPlayerName'] = dfPitcher['newPlayerName'].astype(str)
+    dfPitcher['newPlayerName'] = dfPitcher['newPlayerName'].str[5:-2]
+    return dfBatters, dfPitcher
+
+    
+
+
 def getListOfAllStarters(scheduleUrl, teamAbbreviation): 
     listOfUniqueBatters = []
     listOfUniquePitchers = []
@@ -149,7 +206,7 @@ def getListOfAllStarters(scheduleUrl, teamAbbreviation):
     urls = boxScoreUrls(scheduleUrl) #https://www.baseball-reference.com/boxes/COL/COL202207280.shtml this one doesn't have a pitcher
     for url in urls:
         print(url)
-        allStarters = getStartingLineupInfo(url, teamAbbreviation)
+        allStarters = getStartingLineupInfoOhtani(url, teamAbbreviation)
         startingBatters = allStarters[0]['newPlayerName'].values.tolist()
         startingPitcher = allStarters[1]['newPlayerName'].values.tolist()
         listOfBatters.append(startingBatters)
@@ -256,8 +313,8 @@ def uploadStartingBatterData(teamAbbreviation, year): #gotta add player name her
         data.to_csv(year + '_' + playerName + '_Batting_Logs.csv')
         credentials.upload_file(Filename = year + '_' + playerName + '_Batting_Logs.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Batting_Logs.csv')
 
-def uploadData(teamAbbreviation, year):
-    scheduleUrl = "https://www.baseball-reference.com/teams/" + teamAbbreviation + "/" + year + ".shtml"
+def uploadData(scheduleAbbreviation, teamAbbreviation, year): #need the angels
+    scheduleUrl = "https://www.baseball-reference.com/teams/" + scheduleAbbreviation + "/" + year + ".shtml"
     uploadStarterList(scheduleUrl,teamAbbreviation,year)
     uploadStartingBatterData(teamAbbreviation, year)
     uploadStartingPitcherData(teamAbbreviation, year)
@@ -265,7 +322,7 @@ def uploadData(teamAbbreviation, year):
 def findMovingAverage(df, columnName, numberOfGames):
     variableList = df[columnName]
     variableSeries = pd.Series(variableList)
-    windows = variableSeries.ewm(numberOfGames) #check difference in accuracy when using moving average vs weighted average
+    windows = variableSeries.ewm(numberOfGames)#, min_periods=1) #check difference in accuracy when using moving average vs weighted average
     movingAverage = windows.mean()
     movingAverageList = movingAverage.values.tolist()
     #movingAverageList.insert(0, nan)
@@ -286,11 +343,11 @@ def prepareBattingData(playerName, year):
     boxScores = df['boxScores']
     boxScores = boxScores.to_list()
     boxScores.pop(0)
-    boxScores.append(nan)
+    boxScores.append("lastGame")
     bop = df['BOP']
     bop = bop.to_list()
     bop.pop(0)
-    bop.append(nan)
+    bop.append("lastGame")
     #need to pop one for BOP, batting position
     df['boxScoreUrl'] = boxScores
     df['BOP'] = bop
@@ -332,15 +389,39 @@ def prepareBattingData(playerName, year):
     df['maBA'] = maBA
 
     df = df[['boxScoreUrl','playerName','BOP','BA','maBA','OBP','maOBP','SLG','OPS','maHR','maSO','maH','maSB','maCS','maBB','maDFS','maXBH']]
+    #df = df.dropna()
     df.to_csv(year + '_' + playerName +  "_Batting_Data_Cleaned.csv")
     credentials.upload_file(Filename = year + '_' + playerName + '_Batting_Data_Cleaned.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Batting_Data_Cleaned.csv')
 
 
-def preparePitchingData(playerName, year):
+def preparePitchingData(playerName, year): #create variable for number of times facing opponent team, create variable for number of wins, number of losses, and win percentage of pitcher
+                                            # need to standardize most variable by IP. It doesn't matter if he is walking more people if he is pitchign more innings
+                                            # all that matters is how he is performing per inning
+                                            # Think about adding in GDP since you are including stealing 
+
+                                            #one idea is a couple stats that give their overall effectiveness and then a couple stats that tell how much that is fluctuating up or down recently
     credentials = boto3.client('s3', aws_access_key_id = access_key, 
                           aws_secret_access_key= secret_access_key) 
     pitchingData = credentials.get_object(Bucket='mlbplayerdata', Key= year + '_' + playerName + '_Pitching_Logs.csv')
     df = pd.read_csv(io.BytesIO(pitchingData['Body'].read()))
+    winCount = 0
+    lossCount = 0
+    winCountList = []
+    lossCountList = []
+    for i in df['Dec']:
+        if (str(i)[0] == 'W'):
+            winCount = winCount + 1
+            winCountList.append(winCount)
+            lossCountList.append(lossCount)
+        elif (str(i)[0] == 'L'):
+            lossCount = lossCount + 1
+            winCountList.append(winCount)
+            lossCountList.append(lossCount)
+        else:
+            winCountList.append(winCount)
+            lossCountList.append(lossCount)
+    df['winCount'] = winCountList
+    df['lossCount'] = lossCountList
     boxScores = df['boxScores']
     boxScores = boxScores.to_list()
     boxScores.pop(0)
@@ -377,9 +458,14 @@ def preparePitchingData(playerName, year):
     df['maSB'] = maSB
     maCS = findMovingAverage(df,'CS',3) 
     df['maCS'] = maCS
-
-    df = df[['boxScoreUrlNextGame','ERA','FIP','daysRest','PitchesThrownLastStart','maERA','maFIP','maBB','maSO',
-                'maLD','maGSc','maR','maER','maStS','maIP','maSB','maCS']]
+    maHR = findMovingAverage(df,'HR',3) 
+    df['maHR'] = maHR
+    maH = findMovingAverage(df,'H',3) 
+    df['maH'] = maH
+    maDFS = findMovingAverage(df,'DFS(FD)',3) 
+    df['maDFS'] = maDFS
+    df = df[['boxScoreUrlNextGame','winCount','lossCount','ERA','FIP','daysRest','PitchesThrownLastStart','maERA','maFIP','maBB','maSO',
+                'maLD','maGSc','maR','maER','maStS','maIP','maSB','maCS','maHR','maH','maDFS']]
     df.to_csv(year + '_' + playerName +  "_Pitching_Data_Cleaned.csv")
     credentials.upload_file(Filename = year + '_' + playerName + '_Pitching_Data_Cleaned.csv', Bucket = 'mlbplayerdata', Key = year + '_' + playerName + '_Pitching_Data_Cleaned.csv')
 
@@ -393,13 +479,13 @@ def prepareAllBattingData(teamAbbreviation, year):
     for i in dfStartingBatters['Batters']:
         prepareBattingData(i,year)
 
-def formTeamData(teamAbbreviation, year):
+def formTeamBattingData(scheduleAbbreviation, teamAbbreviation, year):
     credentials = boto3.client('s3', aws_access_key_id = access_key, 
                           aws_secret_access_key= secret_access_key) 
-    scheduleUrl = "https://www.baseball-reference.com/teams/" + teamAbbreviation + "/" + year + ".shtml"
+    scheduleUrl = "https://www.baseball-reference.com/teams/" + scheduleAbbreviation + "/" + year + ".shtml"
     urls = boxScoreUrls(scheduleUrl)
-    urls = urls[1:10]
-    dfAllGames = []
+    urls = urls[1:]
+    dfAllGames =[]
     for url in urls:
         print(url)
         allStarters = getStartingLineupInfo(url, teamAbbreviation)
@@ -412,25 +498,20 @@ def formTeamData(teamAbbreviation, year):
             df = pd.read_csv(io.BytesIO(startingBatterData['Body'].read()))
             df = df.dropna(axis=0)
             df = df[df["boxScoreUrl"].str.match(str(url))]
+            print("done")
             dataframes.append(df)
         df = pd.concat(dataframes)
         dfAllGames.append(df)
+        print(df['BOP'])
     dfAllGames = pd.concat(dfAllGames)
     dfAllGames = dfAllGames.groupby('boxScoreUrl').mean()
     dfAllGames.to_csv(year + '_' + teamAbbreviation + '_Combined_Batting_Data.csv')
+    
     return dfAllGames
 
 
 
 
 
-uploadData("CIN","2021")
+prepareAllBattingData("LAN","2021")
 
-
-#formTeamData("ARI","2021")
-#print(pullBatterData("https://www.baseball-reference.com/players/gl.fcgi?id=locasti01&t=b&year=2021"))
-
-#pullTable("https://www.baseball-reference.com/players/gl.fcgi?id=youngal01&t=p&year=2021",)
-
-#res = requests.get("https://www.baseball-reference.com/players/gl.fcgi?id=youngal01&t=p&year=2021")
-#print(res)
